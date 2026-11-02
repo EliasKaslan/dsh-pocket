@@ -15,7 +15,13 @@ const BROKERS = [
   'wss://broker.hivemq.com:8884/mqtt',
 ];
 const HELLO_TIMEOUT_MS = 12_000;
-const RPC_TIMEOUT_MS = 40_000;
+/**
+ * Per-attempt budget, not the total: a lost frame should be re-asked in a few
+ * seconds, not after thirteen. The desktop caches replies by request id, so a
+ * retry replays the answer instead of re-running the request.
+ */
+const RPC_TIMEOUT_MS = 16_000;
+const RPC_ATTEMPTS = 4;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -257,7 +263,7 @@ class Relay {
    * short response cache keyed by request id, so a resend after a lost frame
    * replays the answer instead of re-running the request (POST included).
    */
-  async request({ method, path, headers, body, gzip, timeout = RPC_TIMEOUT_MS, attempts = 3 }) {
+  async request({ method, path, headers, body, gzip, timeout = RPC_TIMEOUT_MS, attempts = RPC_ATTEMPTS }) {
     const id = randomId(8);
     const encoded = body === undefined ? '' : b64(encoder.encode(body));
     return new Promise((resolve, reject) => {
