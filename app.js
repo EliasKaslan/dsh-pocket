@@ -1205,7 +1205,7 @@ function connectHtml() {
       <h2>怎么找到二维码？</h2>
       <div class="steps-mini">
         <div><b>1</b><span>在电脑上确认 DSH 已启动，并加载了「DSH 随行」插件。</span></div>
-        <div><b>2</b><span>用电脑浏览器打开插件输出的配对页地址（形如 <code>http://127.0.0.1:8766/pair</code>）。</span></div>
+        <div><b>2</b><span>用电脑浏览器打开插件输出的配对页地址（形如 <code>http://127.0.0.1:&lt;端口&gt;/pair</code>，端口见插件启动时的输出）。</span></div>
         <div><b>3</b><span>手机与电脑连同一个 Wi-Fi，然后扫描页面上的二维码。</span></div>
       </div>
     </div>
