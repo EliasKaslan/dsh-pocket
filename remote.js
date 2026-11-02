@@ -22,6 +22,8 @@ const HELLO_TIMEOUT_MS = 12_000;
  */
 const RPC_TIMEOUT_MS = 16_000;
 const RPC_ATTEMPTS = 4;
+// 电脑端 beat 间隔是 8 s；留 3 倍余量，避免手机侧网络抖动误报。
+const PC_STALE_MS = 26_000;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -39,6 +41,31 @@ function hideSplash() {
   splash.classList.add('is-hidden');
   setTimeout(() => splash.remove(), 420);
 }
+
+// 电脑端的存活提示条：中继还连着、但电脑已经不吭声时，必须让用户看见，
+// 否则手机上会一直显示「实时同步中」，而列表其实是旧的。
+function setOfflineBanner(stale, text) {
+  let bar = document.getElementById('dsh-remote-offline');
+  if (!stale) {
+    if (bar !== null) bar.remove();
+    return;
+  }
+  if (bar === null) {
+    bar = document.createElement('div');
+    bar.id = 'dsh-remote-offline';
+    bar.setAttribute('role', 'status');
+    bar.style.cssText = [
+      'position:fixed', 'left:0', 'right:0', 'top:0', 'z-index:2147483000',
+      'padding:10px 14px', 'font:600 13px/1.5 system-ui,-apple-system,"HarmonyOS Sans",sans-serif',
+      'color:#fff', 'background:#b3261e', 'text-align:center',
+      'box-shadow:0 2px 10px rgba(0,0,0,.28)',
+      'padding-top:calc(10px + env(safe-area-inset-top, 0px))',
+    ].join(';');
+    document.body.appendChild(bar);
+  }
+  bar.textContent = text ?? '电脑端已离线，正在重连…（列表可能不是最新）';
+}
+
 
 function b64(bytes) {
   let text = '';
@@ -110,8 +137,12 @@ class Relay {
     this.sockets = new Map();
     this.phoneName = '手机';
     this.pcHello = null;
+    this.pcSeenAt = 0;
+    this.pcStale = false;
+    this.staleTimer = undefined;
     this.onpc = () => {};
     this.onstate = () => {};
+    this.onpcStale = () => {};
     this.stats = { rx: 0, tx: 0, err: 0, lastError: '', lastRxAt: 0 };
   }
 
@@ -177,6 +208,25 @@ class Relay {
     void this.send({ t: 'hello', name: this.phoneName, ver: 1, ts: Date.now() });
   }
 
+  /**
+   * 电脑端每 8 s 发一次 beat。中继本身还连着的时候，MQTT 的 close 事件永远不会触发，
+   * 所以「电脑死没死」只能靠 beat 静默来判断。
+   */
+  startStaleWatch() {
+    if (this.staleTimer !== undefined) return;
+    this.staleTimer = setInterval(() => {
+      if (this.pcSeenAt === 0) return;
+      const idle = Date.now() - this.pcSeenAt;
+      const stale = idle > PC_STALE_MS;
+      if (stale !== this.pcStale) {
+        this.pcStale = stale;
+        this.onpcStale(stale, stale
+          ? `电脑端已离线 ${Math.round(idle / 1000)} 秒，正在重连…（列表可能不是最新）`
+          : undefined);
+      }
+    }, 2000);
+  }
+
   async onMessage(payload) {
     let message;
     try {
@@ -207,6 +257,7 @@ class Relay {
       case 'hello':
       case 'beat':
         this.pcHello = { name: message.name, at: Date.now() };
+        this.pcSeenAt = Date.now();
         this.onpc(this.pcHello);
         break;
       case 'res': {
@@ -465,6 +516,7 @@ async function main() {
   relay.onstate = (state) => {
     if (state === 'offline') setSplash('中继断开，正在重连…', '网络切换后会自行恢复');
   };
+  relay.onpcStale = (stale, text) => setOfflineBanner(stale, text);
 
   try {
     await relay.connect();
@@ -472,6 +524,7 @@ async function main() {
     fail('无法建立中继连接', String(error?.message ?? error));
     return;
   }
+  relay.startStaleWatch();
 
   await new Promise((resolve) => {
     const started = Date.now();
