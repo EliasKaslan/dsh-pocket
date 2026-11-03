@@ -259,6 +259,10 @@ class Relay {
         this.pcHello = { name: message.name, at: Date.now() };
         this.pcSeenAt = Date.now();
         this.onpc(this.pcHello);
+        // 心跳本身就是「电脑端在听」的证据：超过 2 s 没回音的请求，趁这一刻重发（电脑端按 id 幂等）。
+        for (const [, pending] of this.pending) {
+          if (Date.now() - pending.at > 2_000) pending.retry?.();
+        }
         break;
       case 'res': {
         const entry = this.pending.get(message.id);
@@ -332,16 +336,21 @@ class Relay {
       entry.reject = (error) => finish(reject, error);
       this.pending.set(id, entry);
 
+      // 前几次重发要快：首个请求常常正好撞上电脑端重连，4 s 才重试会把冷启动拖到 20 s+。
+      const BACKOFF_MS = [1_200, 2_400, 4_800];
       const attemptOnce = () => {
         attempt += 1;
         this.send({ t: 'req', id, method, path, headers, body: encoded, gzip })
           .catch((error) => entry.reject(error));
+        const delay = BACKOFF_MS[attempt - 1] ?? Math.round(timeout / attempts);
         entry.timer = setTimeout(() => {
           if (settled) return;
           if (attempt < attempts) attemptOnce();
           else entry.reject(new Error('中继请求超时'));
-        }, Math.round(timeout / attempts));
+        }, delay);
       };
+      // 收到 beat 说明下行是通的：把卡住的请求立刻重发一次（电脑端按请求 id 幂等，重发安全）。
+      entry.retry = () => { if (!settled && attempt < attempts) attemptOnce(); };
       attemptOnce();
     });
   }
