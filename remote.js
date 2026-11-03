@@ -401,6 +401,10 @@ function installWebSocket(relay) {
       relay.sockets.set(this.id, this);
       const parsed = new URL(this.url, REMOTE_ORIGIN);
       relay.send({ t: 'ws.open', id: this.id, path: `${parsed.pathname}${parsed.search}` }).catch(() => this._close(1006, 'open failed'));
+      // 和真 WebSocket 一样，握手不能无限等：电脑侧丢了一帧就该快速失败，让上层重连。
+      this.openTimer = setTimeout(() => {
+        if (this.readyState === RemoteWebSocket.CONNECTING) this._close(1006, 'open timeout');
+      }, 12_000);
     }
 
     _emit(type, event) {
@@ -411,6 +415,7 @@ function installWebSocket(relay) {
 
     _open() {
       if (this.readyState !== RemoteWebSocket.CONNECTING) return;
+      if (this.openTimer !== undefined) { clearTimeout(this.openTimer); this.openTimer = undefined; }
       this.readyState = RemoteWebSocket.OPEN;
       this._emit('open', new Event('open'));
     }
@@ -422,6 +427,7 @@ function installWebSocket(relay) {
 
     _close(code = 1000, reason = '') {
       if (this.readyState === RemoteWebSocket.CLOSED) return;
+      if (this.openTimer !== undefined) { clearTimeout(this.openTimer); this.openTimer = undefined; }
       this.readyState = RemoteWebSocket.CLOSED;
       relay.sockets.delete(this.id);
       this._emit('close', new CloseEvent('close', { code, reason, wasClean: code === 1000 }));
