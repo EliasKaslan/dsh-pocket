@@ -63,7 +63,7 @@ function setOfflineBanner(stale, text) {
     ].join(';');
     document.body.appendChild(bar);
   }
-  bar.textContent = text ?? '电脑端已离线，正在重连…（列表可能不是最新）';
+  bar.textContent = text ?? '电脑端已离线 · 手机与中转站正常，正在重连电脑…（列表可能不是最新）';
 }
 
 
@@ -221,7 +221,7 @@ class Relay {
       if (stale !== this.pcStale) {
         this.pcStale = stale;
         this.onpcStale(stale, stale
-          ? `电脑端已离线 ${Math.round(idle / 1000)} 秒，正在重连…（列表可能不是最新）`
+          ? `电脑端已离线 ${Math.round(idle / 1000)} 秒 · 正在重连…（列表可能不是最新）`
           : undefined);
       }
     }, 2000);
