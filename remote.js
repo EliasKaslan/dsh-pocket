@@ -511,6 +511,16 @@ async function main() {
   }
 
   const relay = new Relay({ room, sealer });
+
+// 页面被关掉 / 切到后台时，尽力把隧道关掉，别让电脑端留着僵尸槽位。
+// 手机被强杀时这段不会执行——所以电脑侧还有一层按活动时间的槽位回收。
+function releaseChannels() {
+  try {
+    for (const [, socket] of relay.sockets) relay.send({ t: 'ws.close', id: socket.id }).catch(() => {});
+  } catch { /* 已经没了 */ }
+}
+window.addEventListener('pagehide', releaseChannels);
+window.addEventListener('beforeunload', releaseChannels);
   window.__DSH_RELAY__ = relay;
   relay.onpc = (pc) => setSplash(`已连接 ${pc.name}`, '正在同步任务…');
   relay.onstate = (state) => {
