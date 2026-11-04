@@ -716,6 +716,7 @@ window.addEventListener('beforeunload', releaseChannels);
       clearSession();
       relay.session = null;
     };
+    hideSplash();
     const passed = await showLogin(relay, {
       user: authState.user ?? '',
       reason: relay.session === null ? '' : '登录已过期，请重新登录',
