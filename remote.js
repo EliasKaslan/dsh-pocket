@@ -42,6 +42,100 @@ function hideSplash() {
   setTimeout(() => splash.remove(), 420);
 }
 
+/* --------------------------- 登录态（15 天） --------------------------- */
+
+const SESSION_KEY = 'dsh.phone.session.v1';
+
+function loadSession() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SESSION_KEY) ?? 'null');
+    if (parsed === null || typeof parsed !== 'object') return null;
+    if (typeof parsed.token !== 'string' || parsed.token.length < 20) return null;
+    if (Number(parsed.expiresAt) <= Date.now()) { localStorage.removeItem(SESSION_KEY); return null; }
+    return { token: parsed.token, expiresAt: Number(parsed.expiresAt), user: String(parsed.user ?? '') };
+  } catch { return null; }
+}
+
+function saveSession(session) {
+  try { localStorage.setItem(SESSION_KEY, JSON.stringify(session)); } catch { /* 无痕模式 */ }
+}
+
+function clearSession() {
+  try { localStorage.removeItem(SESSION_KEY); } catch { /* ignore */ }
+}
+
+const LOGIN_STYLE = [
+  'position:fixed', 'inset:0', 'z-index:2147483001', 'display:flex', 'align-items:center', 'justify-content:center',
+  'padding:24px', 'background:linear-gradient(160deg,#101418 0%,#1b2430 100%)',
+  'font:15px/1.5 system-ui,-apple-system,"HarmonyOS Sans","PingFang SC",sans-serif', 'color:#eef2f6',
+].join(';');
+
+/**
+ * 拦住没有令牌的手机：只有电脑端认可的用户名口令才能进入界面。
+ * 登录成功后令牌存本机 15 天，下次打开直接进。
+ */
+function showLogin(relay, { user = '', reason = '' } = {}) {
+  return new Promise((resolve) => {
+    const layer = document.createElement('div');
+    layer.id = 'dsh-login';
+    layer.style.cssText = LOGIN_STYLE;
+    layer.innerHTML = `
+      <form id="dsh-login-form" style="width:100%;max-width:360px;background:#fff;color:#15181d;border-radius:18px;padding:26px 22px;box-shadow:0 24px 60px rgba(0,0,0,.45)">
+        <div style="font-size:19px;font-weight:700;margin-bottom:4px">连接我的电脑</div>
+        <div style="font-size:13px;color:#5b6470;margin-bottom:18px">这台设备还没有登录，输入电脑上设置的用户名和密码。</div>
+        <label style="display:block;font-size:12px;color:#5b6470;margin-bottom:6px">用户名</label>
+        <input id="dsh-login-user" autocomplete="username" autocapitalize="off" spellcheck="false"
+          value="${user.replace(/"/gu, '&quot;')}"
+          style="width:100%;box-sizing:border-box;padding:12px 14px;font-size:16px;border:1px solid #d5dbe3;border-radius:10px;margin-bottom:14px" />
+        <label style="display:block;font-size:12px;color:#5b6470;margin-bottom:6px">密码</label>
+        <input id="dsh-login-pass" type="password" autocomplete="current-password"
+          style="width:100%;box-sizing:border-box;padding:12px 14px;font-size:16px;border:1px solid #d5dbe3;border-radius:10px;margin-bottom:12px" />
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#5b6470;margin-bottom:16px">
+          <input id="dsh-login-remember" type="checkbox" checked style="width:16px;height:16px" />
+          这台手机记住我 15 天
+        </label>
+        <div id="dsh-login-error" style="min-height:18px;font-size:13px;color:#b3261e;margin-bottom:10px">${reason}</div>
+        <button id="dsh-login-submit" type="submit"
+          style="width:100%;padding:13px;font-size:16px;font-weight:600;color:#fff;background:#1f6feb;border:0;border-radius:10px">登录</button>
+      </form>`;
+    document.body.appendChild(layer);
+    const form = layer.querySelector('#dsh-login-form');
+    const userInput = layer.querySelector('#dsh-login-user');
+    const passInput = layer.querySelector('#dsh-login-pass');
+    const remember = layer.querySelector('#dsh-login-remember');
+    const errorBox = layer.querySelector('#dsh-login-error');
+    const submit = layer.querySelector('#dsh-login-submit');
+    if (userInput.value === '') userInput.focus(); else passInput.focus();
+
+    const finish = (ok) => { layer.remove(); resolve(ok); };
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const name = userInput.value.trim();
+      const password = passInput.value;
+      if (name.length === 0 || password.length === 0) { errorBox.textContent = '用户名和密码都要填'; return; }
+      submit.disabled = true;
+      submit.textContent = '登录中…';
+      errorBox.textContent = '';
+      const reply = await relay.login({ user: name, password, remember: remember.checked });
+      if (reply.ok === true && typeof reply.token === 'string') {
+        saveSession({ token: reply.token, expiresAt: Number(reply.expiresAt) || 0, user: name });
+        relay.session = { token: reply.token, expiresAt: Number(reply.expiresAt) || 0, user: name };
+        finish(true);
+        return;
+      }
+      submit.disabled = false;
+      submit.textContent = '登录';
+      passInput.value = '';
+      if (reply.reason === 'locked') errorBox.textContent = `失败次数太多，请 ${Math.ceil(Number(reply.retryAfterSec ?? 300) / 60)} 分钟后再试`;
+      else if (reply.reason === 'timeout') errorBox.textContent = '电脑端没有回应，检查网络后重试';
+      else if (reply.reason === 'disabled') errorBox.textContent = '电脑端没有启用登录口令';
+      else errorBox.textContent = '用户名或密码不对';
+      passInput.focus();
+    });
+  });
+}
+
+
 // 电脑端的存活提示条：中继还连着、但电脑已经不吭声时，必须让用户看见，
 // 否则手机上会一直显示「实时同步中」，而列表其实是旧的。
 function setOfflineBanner(stale, text) {
@@ -143,6 +237,13 @@ class Relay {
     this.onpc = () => {};
     this.onstate = () => {};
     this.onpcStale = () => {};
+    this.onunauthorized = () => {};
+    // 登录令牌：存在本机 localStorage，随每条上行消息带给电脑端。
+    this.session = loadSession();
+    this.authRequired = false;
+    this.authUser = null;
+    this.authWaiter = undefined;
+    this.loginWaiter = undefined;
     this.stats = { rx: 0, tx: 0, err: 0, lastError: '', lastRxAt: 0 };
   }
 
@@ -269,7 +370,23 @@ class Relay {
         if (entry === undefined) return;
         this.pending.delete(message.id);
         clearTimeout(entry.timer);
+        // 令牌过期/被作废：电脑端回 401，这里立刻退回登录页，别让界面继续空转。
+        if (Number(message.status) === 401) this.onunauthorized?.();
         entry.resolve(message);
+        break;
+      }
+      case 'auth': {
+        this.authRequired = message.required === true;
+        this.authUser = typeof message.user === 'string' ? message.user : null;
+        if (message.ok === true && Number(message.expiresAt) > 0 && this.session !== null) {
+          this.session.expiresAt = Number(message.expiresAt);
+          saveSession(this.session);
+        }
+        this.authWaiter?.({ required: this.authRequired, ok: message.ok === true, user: this.authUser });
+        break;
+      }
+      case 'login': {
+        this.loginWaiter?.(message);
         break;
       }
       case 'ws.open': {
@@ -300,8 +417,33 @@ class Relay {
 
   async send(object) {
     if (this.client === undefined || !this.ready) throw new Error('中继尚未就绪');
-    const sealed = await this.sealer.seal(object, this.upTopic);
+    // 令牌随每条上行消息一起走：电脑端逐条校验，重启中继也不会丢登录态。
+    const payload = this.session !== null && object.token === undefined ? { ...object, token: this.session.token } : object;
+    const sealed = await this.sealer.seal(payload, this.upTopic);
     this.client.publish(this.upTopic, sealed, { qos: 1 });
+  }
+
+  /** 问电脑端「这条链路要不要登录、我这个令牌还有效吗」。 */
+  checkAuth(timeoutMs = 8_000) {
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = (value) => { if (settled) return; settled = true; this.authWaiter = undefined; resolve(value); };
+      this.authWaiter = done;
+      this.send({ t: 'auth' }).catch(() => done({ required: false, ok: true }));
+      setTimeout(() => done({ required: this.authRequired, ok: !this.authRequired }), timeoutMs);
+    });
+  }
+
+  /** 交口令换令牌。 */
+  login({ user, password, remember = true, timeoutMs = 15_000 }) {
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = (value) => { if (settled) return; settled = true; this.loginWaiter = undefined; resolve(value); };
+      this.loginWaiter = done;
+      this.send({ t: 'login', user, password, remember, phone: this.phoneName })
+        .catch((error) => done({ ok: false, reason: 'send-failed', message: String(error?.message ?? error) }));
+      setTimeout(() => done({ ok: false, reason: 'timeout' }), timeoutMs);
+    });
   }
 
   failAll(reason) {
@@ -565,6 +707,27 @@ window.addEventListener('beforeunload', releaseChannels);
   if (relay.pcHello === null) {
     fail('电脑端没有响应', '确认电脑上的 DSH 正在运行，且「远程访问」已开启');
     return;
+  }
+
+  // 登录闸门：没有有效令牌就先要口令；令牌 15 天内有效，过期自动再问。
+  const authState = await relay.checkAuth();
+  if (authState.required && !authState.ok) {
+    relay.onunauthorized = () => {
+      clearSession();
+      relay.session = null;
+    };
+    const passed = await showLogin(relay, {
+      user: authState.user ?? '',
+      reason: relay.session === null ? '' : '登录已过期，请重新登录',
+    });
+    if (!passed) { fail('需要登录', '没有登录就无法访问这台电脑'); return; }
+  } else if (authState.required) {
+    relay.onunauthorized = () => {
+      clearSession();
+      relay.session = null;
+      void showLogin(relay, { user: authState.user ?? '', reason: '登录已过期，请重新登录' })
+        .then((ok) => { if (ok) location.reload(); });
+    };
   }
 
   try {
